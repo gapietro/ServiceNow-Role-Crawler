@@ -197,10 +197,20 @@ function generateHTMLReport(profile) {
     html += '<p><strong>Description:</strong> ' + (profile.role.description || 'No description') + '</p>\n';
     html += '<p><strong>Sys ID:</strong> ' + profile.role.sys_id + '</p>\n';
 
-    // Role Hierarchy
+    // Role Hierarchy - Sort by package, then by role name
     html += '<h2>Role Hierarchy (' + profile.allRoles.length + ' roles total)</h2>\n';
     html += '<table>\n<tr><th>Type</th><th>Role Name</th><th>Description</th><th>Package</th></tr>\n';
-    profile.allRoles.forEach(function(role) {
+    
+    var sortedRoles = profile.allRoles.slice().sort(function(a, b) {
+        // First sort by package
+        if (a.packageInfo.name !== b.packageInfo.name) {
+            return a.packageInfo.name.localeCompare(b.packageInfo.name);
+        }
+        // Then by role name
+        return a.name.localeCompare(b.name);
+    });
+    
+    sortedRoles.forEach(function(role) {
         var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
         var cssClass = role.isDirect ? 'direct' : 'inherited';
         html += '<tr class="' + cssClass + '">\n';
@@ -212,14 +222,15 @@ function generateHTMLReport(profile) {
     });
     html += '</table>\n';
 
-    // ACL Summary by Role
+    // ACL Summary by Role - Sort roles by package, then by role name
     html += '<h2>Access Control Lists (ACLs) by Role</h2>\n';
     var totalACLs = 0;
-    profile.allRoles.forEach(function(role) {
+    sortedRoles.forEach(function(role) {
         if (role.acls.length > 0) {
             totalACLs += role.acls.length;
             var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
-            html += '<h3>' + roleType + ' - ' + role.name + ' (' + role.acls.length + ' ACLs)</h3>\n';
+            var packageInfo = role.packageInfo.name !== 'Global' ? ' (Package: ' + role.packageInfo.name + ')' : '';
+            html += '<h3>' + roleType + ' - ' + role.name + packageInfo + ' (' + role.acls.length + ' ACLs)</h3>\n';
             
             // Group ACLs by operation
             var aclsByOperation = {};
@@ -232,6 +243,14 @@ function generateHTMLReport(profile) {
             
             html += '<table>\n<tr><th>Operation</th><th>Table/Field</th><th>Type</th><th>Package</th></tr>\n';
             for (var operation in aclsByOperation) {
+                // Sort ACLs within each operation by package, then by table name
+                aclsByOperation[operation].sort(function(a, b) {
+                    if (a.tablePackage.name !== b.tablePackage.name) {
+                        return a.tablePackage.name.localeCompare(b.tablePackage.name);
+                    }
+                    return a.table.localeCompare(b.table);
+                });
+                
                 aclsByOperation[operation].forEach(function(acl, index) {
                     html += '<tr>\n';
                     if (index === 0) {
@@ -247,16 +266,49 @@ function generateHTMLReport(profile) {
         }
     });
 
-    // Tables/Applications Summary
+    // Tables/Applications Summary - Sort by package, then by table name
     html += '<h2>Tables/Applications Accessed (' + profile.applications.length + ' total)</h2>\n';
     if (profile.applications.length > 0) {
-        html += '<table>\n<tr><th>Table/Application</th><th>Accessed via Roles</th></tr>\n';
+        // Group by package and sort
+        var tablesByPackage = {};
         profile.applications.forEach(function(app) {
-            html += '<tr>\n';
-            html += '<td>' + app.name + '</td>\n';
-            html += '<td>' + app.roles.join(', ') + '</td>\n';
-            html += '</tr>\n';
+            // Find package for this table
+            var packageName = 'Global';
+            profile.allRoles.forEach(function(role) {
+                role.acls.forEach(function(acl) {
+                    if (acl.table === app.name && acl.tablePackage.name !== 'Global') {
+                        packageName = acl.tablePackage.name;
+                    }
+                });
+            });
+            
+            if (!tablesByPackage[packageName]) {
+                tablesByPackage[packageName] = [];
+            }
+            tablesByPackage[packageName].push(app);
         });
+        
+        // Sort packages alphabetically and tables within each package
+        var sortedPackages = Object.keys(tablesByPackage).sort();
+        
+        html += '<table>\n<tr><th>Package</th><th>Table/Application</th><th>Accessed via Roles</th></tr>\n';
+        for (var i = 0; i < sortedPackages.length; i++) {
+            var pkg = sortedPackages[i];
+            // Sort tables within each package
+            tablesByPackage[pkg].sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+            
+            tablesByPackage[pkg].forEach(function(app, index) {
+                html += '<tr>\n';
+                if (index === 0) {
+                    html += '<td rowspan="' + tablesByPackage[pkg].length + '" class="package">' + pkg + '</td>\n';
+                }
+                html += '<td>' + app.name + '</td>\n';
+                html += '<td>' + app.roles.join(', ') + '</td>\n';
+                html += '</tr>\n';
+            });
+        }
         html += '</table>\n';
     }
 
@@ -269,14 +321,16 @@ function generateHTMLReport(profile) {
     html += '<p><strong>Total ACLs:</strong> ' + totalACLs + '</p>\n';
     html += '<p><strong>Tables/Applications accessed:</strong> ' + profile.applications.length + '</p>\n';
     
-    // Package distribution
+    // Package distribution - Sort packages alphabetically
     var packageCounts = {};
     profile.allRoles.forEach(function(role) {
         var pkg = role.packageInfo.name;
         packageCounts[pkg] = (packageCounts[pkg] || 0) + 1;
     });
     html += '<p><strong>Package distribution:</strong></p>\n<ul>\n';
-    for (var pkg in packageCounts) {
+    var sortedPackageNames = Object.keys(packageCounts).sort();
+    for (var i = 0; i < sortedPackageNames.length; i++) {
+        var pkg = sortedPackageNames[i];
         html += '<li>' + pkg + ': ' + packageCounts[pkg] + ' roles</li>\n';
     }
     html += '</ul>\n';
@@ -297,21 +351,40 @@ function generateCSVReport(profile) {
     var csv = 'Role Access Report - ' + profile.role.name + '\n';
     csv += 'Generated,' + new GlideDateTime().getDisplayValue() + '\n\n';
     
-    // Role hierarchy
+    // Role hierarchy - Sort by package, then by role name
     csv += 'Role Hierarchy\n';
     csv += 'Type,Role Name,Description,Package\n';
-    profile.allRoles.forEach(function(role) {
+    
+    var sortedRoles = profile.allRoles.slice().sort(function(a, b) {
+        // First sort by package
+        if (a.packageInfo.name !== b.packageInfo.name) {
+            return a.packageInfo.name.localeCompare(b.packageInfo.name);
+        }
+        // Then by role name
+        return a.name.localeCompare(b.name);
+    });
+    
+    sortedRoles.forEach(function(role) {
         var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
         csv += '"' + roleType + '","' + role.name + '","' + (role.description || '').replace(/"/g, '""') + '","' + role.packageInfo.name + '"\n';
     });
     
     csv += '\nACL Details\n';
-    csv += 'Role Type,Role Name,Table/Field,Operation,ACL Type,Package\n';
-    profile.allRoles.forEach(function(role) {
+    csv += 'Role Type,Role Name,Role Package,Table/Field,Operation,ACL Type,Table Package\n';
+    sortedRoles.forEach(function(role) {
         if (role.acls.length > 0) {
             var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
-            role.acls.forEach(function(acl) {
-                csv += '"' + roleType + '","' + role.name + '","' + acl.table + '","' + acl.operation + '","' + acl.type + '","' + acl.tablePackage.name + '"\n';
+            
+            // Sort ACLs by table package, then by table name
+            var sortedAcls = role.acls.slice().sort(function(a, b) {
+                if (a.tablePackage.name !== b.tablePackage.name) {
+                    return a.tablePackage.name.localeCompare(b.tablePackage.name);
+                }
+                return a.table.localeCompare(b.table);
+            });
+            
+            sortedAcls.forEach(function(acl) {
+                csv += '"' + roleType + '","' + role.name + '","' + role.packageInfo.name + '","' + acl.table + '","' + acl.operation + '","' + acl.type + '","' + acl.tablePackage.name + '"\n';
             });
         }
     });
@@ -335,9 +408,18 @@ function generateConsoleReport(profile) {
     gs.print('  Sys ID: ' + profile.role.sys_id);
     gs.print('');
 
-    // Role Hierarchy
+    // Role Hierarchy - Sort by package, then by role name
     gs.print('▶ ROLE HIERARCHY (' + profile.allRoles.length + ' roles total)');
-    profile.allRoles.forEach(function(role) {
+    var sortedRoles = profile.allRoles.slice().sort(function(a, b) {
+        // First sort by package
+        if (a.packageInfo.name !== b.packageInfo.name) {
+            return a.packageInfo.name.localeCompare(b.packageInfo.name);
+        }
+        // Then by role name
+        return a.name.localeCompare(b.name);
+    });
+    
+    sortedRoles.forEach(function(role) {
         var roleType = role.isDirect ? '[DIRECT]' : '[INHERITED]';
         var packageInfo = role.packageInfo.name !== 'Global' ? ' (Package: ' + role.packageInfo.name + ')' : '';
         gs.print('  ' + roleType + ' ' + role.name + packageInfo);
@@ -347,14 +429,15 @@ function generateConsoleReport(profile) {
     });
     gs.print('');
 
-    // ACL Details by Role
+    // ACL Details by Role - Sort roles by package, then by role name
     gs.print('▶ ACCESS CONTROL LISTS (ACLs) BY ROLE');
     var totalACLs = 0;
-    profile.allRoles.forEach(function(role) {
+    sortedRoles.forEach(function(role) {
         if (role.acls.length > 0) {
             totalACLs += role.acls.length;
             var roleType = role.isDirect ? '[DIRECT]' : '[INHERITED]';
-            gs.print('  ' + roleType + ' ' + role.name + ' (' + role.acls.length + ' ACLs):');
+            var packageInfo = role.packageInfo.name !== 'Global' ? ' (Package: ' + role.packageInfo.name + ')' : '';
+            gs.print('  ' + roleType + ' ' + role.name + packageInfo + ' (' + role.acls.length + ' ACLs):');
             
             // Group ACLs by operation
             var aclsByOperation = {};
@@ -365,8 +448,16 @@ function generateConsoleReport(profile) {
                 aclsByOperation[acl.operation].push(acl);
             });
             
-            // Display ACLs grouped by operation
+            // Display ACLs grouped by operation, sorted by table package then table name
             for (var operation in aclsByOperation) {
+                // Sort ACLs within each operation by package, then by table name
+                aclsByOperation[operation].sort(function(a, b) {
+                    if (a.tablePackage.name !== b.tablePackage.name) {
+                        return a.tablePackage.name.localeCompare(b.tablePackage.name);
+                    }
+                    return a.table.localeCompare(b.table);
+                });
+                
                 gs.print('    ' + operation.toUpperCase() + ' (' + aclsByOperation[operation].length + '):');
                 aclsByOperation[operation].forEach(function(acl) {
                     var packageInfo = acl.tablePackage.name !== 'Global' ? ' [' + acl.tablePackage.name + ']' : '';
@@ -377,12 +468,12 @@ function generateConsoleReport(profile) {
         }
     });
 
-    // Tables/Applications Summary
+    // Tables/Applications Summary - Sort by package, then by table name
     gs.print('▶ TABLES/APPLICATIONS ACCESSED (' + profile.applications.length + ' total)');
     if (profile.applications.length === 0) {
         gs.print('  No tables/applications found with ACL access.');
     } else {
-        // Group by package
+        // Group by package and sort
         var tablesByPackage = {};
         profile.applications.forEach(function(app) {
             // Find package for this table
@@ -401,7 +492,16 @@ function generateConsoleReport(profile) {
             tablesByPackage[packageName].push(app);
         });
         
-        for (var pkg in tablesByPackage) {
+        // Sort packages alphabetically
+        var sortedPackages = Object.keys(tablesByPackage).sort();
+        
+        for (var i = 0; i < sortedPackages.length; i++) {
+            var pkg = sortedPackages[i];
+            // Sort tables within each package
+            tablesByPackage[pkg].sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+            
             gs.print('  Package: ' + pkg + ' (' + tablesByPackage[pkg].length + ' tables)');
             tablesByPackage[pkg].forEach(function(app) {
                 gs.print('    • ' + app.name + ' (via roles: ' + app.roles.join(', ') + ')');
@@ -418,14 +518,16 @@ function generateConsoleReport(profile) {
     gs.print('  Total ACLs: ' + totalACLs);
     gs.print('  Tables/Applications accessed: ' + profile.applications.length);
     
-    // Package distribution
+    // Package distribution - Sort packages alphabetically
     var packageCounts = {};
     profile.allRoles.forEach(function(role) {
         var pkg = role.packageInfo.name;
         packageCounts[pkg] = (packageCounts[pkg] || 0) + 1;
     });
     gs.print('  Package distribution:');
-    for (var pkg in packageCounts) {
+    var sortedPackageNames = Object.keys(packageCounts).sort();
+    for (var i = 0; i < sortedPackageNames.length; i++) {
+        var pkg = sortedPackageNames[i];
         gs.print('    • ' + pkg + ': ' + packageCounts[pkg] + ' roles');
     }
     
