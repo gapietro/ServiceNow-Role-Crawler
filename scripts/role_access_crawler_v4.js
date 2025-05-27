@@ -17,6 +17,159 @@ gs.print('Generated: ' + new GlideDateTime().getDisplayValue());
 gs.print('==============================================\n');
 
 /**
+ * Find any record by sys_id and get its name/title
+ */
+function findRecordBySysId(sysId) {
+    if (!sysId || sysId.length !== 32) {
+        return null;
+    }
+    
+    try {
+        // First, try to find what table this sys_id belongs to using sys_metadata
+        var metaGr = new GlideRecord('sys_metadata');
+        metaGr.addQuery('sys_id', sysId);
+        metaGr.query();
+        
+        if (metaGr.next()) {
+            var tableName = metaGr.getValue('sys_class_name');
+            
+            if (tableName) {
+                // Now query the actual table to get the record details
+                var recordGr = new GlideRecord(tableName);
+                if (recordGr.get(sysId)) {
+                    // Try different common name fields in order of preference
+                    var nameFields = [
+                        'name', 'title', 'short_description', 'description', 
+                        'label', 'action_name', 'column_label', 'display_name',
+                        'sys_name', 'number', 'user_name', 'first_name'
+                    ];
+                    
+                    var recordName = null;
+                    for (var i = 0; i < nameFields.length; i++) {
+                        var fieldValue = recordGr.getValue(nameFields[i]);
+                        if (fieldValue && fieldValue.trim() !== '') {
+                            recordName = fieldValue;
+                            break;
+                        }
+                    }
+                    
+                    // If we found a name, return the info
+                    if (recordName) {
+                        return {
+                            table: tableName,
+                            name: recordName,
+                            displayName: getTableDisplayName(tableName) + ': ' + recordName
+                        };
+                    } else {
+                        return {
+                            table: tableName,
+                            name: 'Unnamed Record',
+                            displayName: getTableDisplayName(tableName) + ': Unnamed Record'
+                        };
+                    }
+                }
+            }
+        }
+        
+        // If sys_metadata approach fails, try a few common tables directly
+        var commonTables = [
+            'sys_ui_action', 'sys_script', 'sys_script_client', 'sys_script_include',
+            'sys_ui_page', 'sys_ui_macro', 'sys_report', 'sys_user_role',
+            'sys_app_module', 'sys_processor', 'sys_web_service'
+        ];
+        
+        for (var j = 0; j < commonTables.length; j++) {
+            try {
+                var directGr = new GlideRecord(commonTables[j]);
+                if (directGr.get(sysId)) {
+                    var name = directGr.getValue('name') || 
+                              directGr.getValue('title') || 
+                              directGr.getValue('action_name') ||
+                              'Unknown';
+                    return {
+                        table: commonTables[j],
+                        name: name,
+                        displayName: getTableDisplayName(commonTables[j]) + ': ' + name
+                    };
+                }
+            } catch (e) {
+                // Skip tables we don't have access to
+                continue;
+            }
+        }
+        
+    } catch (e) {
+        gs.print('Warning: Error looking up sys_id ' + sysId + ' - ' + e.message);
+    }
+    
+    return null;
+}
+
+/**
+ * Convert table name to human-readable display name
+ */
+function getTableDisplayName(tableName) {
+    var displayNames = {
+        'sys_ui_action': 'UI Action',
+        'sys_script': 'Business Rule',
+        'sys_script_client': 'Client Script',
+        'sys_script_include': 'Script Include',
+        'sysauto_script': 'Scheduled Job',
+        'sys_processor': 'Processor',
+        'sys_web_service': 'Web Service',
+        'sys_data_source': 'Import Set',
+        'wf_workflow': 'Workflow',
+        'sys_ui_page': 'UI Page',
+        'sys_ui_macro': 'UI Macro',
+        'sys_ui_script': 'UI Script',
+        'sys_transform_map': 'Transform Map',
+        'sys_report': 'Report',
+        'sys_ws_operation': 'Web Service Operation',
+        'sys_rest_service': 'REST Service',
+        'sys_soap_service': 'SOAP Service',
+        'sys_ui_form': 'Form',
+        'sys_ui_list': 'List',
+        'sys_ui_view': 'View',
+        'sys_dictionary': 'Dictionary Entry',
+        'sys_choice': 'Choice',
+        'sys_ui_policy': 'UI Policy',
+        'sys_data_policy2': 'Data Policy',
+        'sys_script_fix': 'Fix Script',
+        'sys_email': 'Email',
+        'sysevent_email_action': 'Email Notification',
+        'sys_trigger': 'Trigger',
+        'sys_flow': 'Flow',
+        'sys_hub_flow': 'Hub Flow',
+        'sys_app_module': 'Application Module',
+        'sys_user_role': 'Role',
+        'sys_user': 'User',
+        'sys_user_group': 'Group'
+    };
+    
+    return displayNames[tableName] || tableName.replace(/^sys_/, '').replace(/_/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); });
+}
+
+/**
+ * Resolve operation sys_id to human-readable name
+ */
+function resolveOperationName(operation, tableName) {
+    // If operation is not a sys_id (32 characters), return as-is
+    if (!operation || operation.length !== 32) {
+        return operation;
+    }
+    
+    // Use the comprehensive sys_id lookup
+    var recordInfo = findRecordBySysId(operation);
+    
+    if (recordInfo) {
+        return recordInfo.displayName;
+    }
+    
+    // If we still can't resolve it, provide context with the table name
+    return 'Unknown Operation: ' + operation.substring(0, 8) + '... (on table: ' + (tableName || 'unknown') + ')';
+}
+
+/**
  * Get role access profile by role name
  */
 function getRoleAccessProfile(roleName) {
@@ -113,9 +266,15 @@ function getRoleAccessProfile(roleName) {
                         }
                     }
                 }
+                
+                // Resolve operation name if it's a sys_id
+                var operation = aclGr.getValue('operation');
+                var resolvedOperation = resolveOperationName(operation, tableName);
+                
                 roleObj.acls.push({
                     table: tableName,
-                    operation: aclGr.getValue('operation'),
+                    operation: operation, // Keep original for sorting
+                    operationDisplay: resolvedOperation, // Human-readable version for display
                     type: aclGr.getValue('type'),
                     description: aclGr.getValue('description'),
                     tablePackage: tablePkgObj
@@ -251,10 +410,13 @@ function generateHTMLReport(profile) {
                     return a.table.localeCompare(b.table);
                 });
                 
+                // Use the display name of the first ACL for the operation header
+                var operationDisplayName = aclsByOperation[operation][0].operationDisplay || operation.toUpperCase();
+                
                 aclsByOperation[operation].forEach(function(acl, index) {
                     html += '<tr>\n';
                     if (index === 0) {
-                        html += '<td rowspan="' + aclsByOperation[operation].length + '">' + operation.toUpperCase() + '</td>\n';
+                        html += '<td rowspan="' + aclsByOperation[operation].length + '">' + operationDisplayName + '</td>\n';
                     }
                     html += '<td>' + acl.table + '</td>\n';
                     html += '<td>' + acl.type + '</td>\n';
@@ -370,7 +532,7 @@ function generateCSVReport(profile) {
     });
     
     csv += '\nACL Details\n';
-    csv += 'Role Type,Role Name,Role Package,Table/Field,Operation,ACL Type,Table Package\n';
+    csv += 'Role Type,Role Name,Role Package,Table/Field,Operation,Operation Display,ACL Type,Table Package\n';
     sortedRoles.forEach(function(role) {
         if (role.acls.length > 0) {
             var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
@@ -384,7 +546,7 @@ function generateCSVReport(profile) {
             });
             
             sortedAcls.forEach(function(acl) {
-                csv += '"' + roleType + '","' + role.name + '","' + role.packageInfo.name + '","' + acl.table + '","' + acl.operation + '","' + acl.type + '","' + acl.tablePackage.name + '"\n';
+                csv += '"' + roleType + '","' + role.name + '","' + role.packageInfo.name + '","' + acl.table + '","' + acl.operation + '","' + (acl.operationDisplay || acl.operation) + '","' + acl.type + '","' + acl.tablePackage.name + '"\n';
             });
         }
     });
@@ -458,7 +620,9 @@ function generateConsoleReport(profile) {
                     return a.table.localeCompare(b.table);
                 });
                 
-                gs.print('    ' + operation.toUpperCase() + ' (' + aclsByOperation[operation].length + '):');
+                // Use the display name of the first ACL for the operation header
+                var operationDisplayName = aclsByOperation[operation][0].operationDisplay || operation.toUpperCase();
+                gs.print('    ' + operationDisplayName + ' (' + aclsByOperation[operation].length + '):');
                 aclsByOperation[operation].forEach(function(acl) {
                     var packageInfo = acl.tablePackage.name !== 'Global' ? ' [' + acl.tablePackage.name + ']' : '';
                     gs.print('      • ' + acl.table + packageInfo + ' (' + acl.type + ')');
