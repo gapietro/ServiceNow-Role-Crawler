@@ -271,11 +271,34 @@ function getRoleAccessProfile(roleName) {
                 var operation = aclGr.getValue('operation');
                 var resolvedOperation = resolveOperationName(operation, tableName);
                 
+                // Resolve table name if it's a sys_id
+                var tableDisplay = tableName;
+                if (tableName && tableName.length === 32 && !tableName.includes('.')) {
+                    // This might be a sys_id, try to resolve it
+                    var tableRecord = findRecordBySysId(tableName);
+                    if (tableRecord) {
+                        tableDisplay = tableRecord.displayName;
+                    }
+                }
+                
+                // Resolve type if it's a sys_id
+                var aclType = aclGr.getValue('type');
+                var typeDisplay = aclType;
+                if (aclType && aclType.length === 32) {
+                    // This might be a sys_id, try to resolve it
+                    var typeRecord = findRecordBySysId(aclType);
+                    if (typeRecord) {
+                        typeDisplay = typeRecord.displayName;
+                    }
+                }
+                
                 roleObj.acls.push({
-                    table: tableName,
+                    table: tableName, // Keep original for sorting/processing
+                    tableDisplay: tableDisplay, // Human-readable version for display
                     operation: operation, // Keep original for sorting
                     operationDisplay: resolvedOperation, // Human-readable version for display
-                    type: aclGr.getValue('type'),
+                    type: aclType, // Keep original for sorting
+                    typeDisplay: typeDisplay, // Human-readable version for display
                     description: aclGr.getValue('description'),
                     tablePackage: tablePkgObj
                 });
@@ -288,14 +311,21 @@ function getRoleAccessProfile(roleName) {
     var appTables = {};
     result.allRoles.forEach(function(role) {
         role.acls.forEach(function(acl) {
-            if (!appTables[acl.table]) appTables[acl.table] = [];
-            if (appTables[acl.table].indexOf(role.name) === -1) {
-                appTables[acl.table].push(role.name);
+            var tableKey = acl.table;
+            if (!appTables[tableKey]) {
+                appTables[tableKey] = {
+                    name: acl.table,
+                    displayName: acl.tableDisplay || acl.table,
+                    roles: []
+                };
+            }
+            if (appTables[tableKey].roles.indexOf(role.name) === -1) {
+                appTables[tableKey].roles.push(role.name);
             }
         });
     });
     for (var table in appTables) {
-        result.applications.push({ name: table, roles: appTables[table] });
+        result.applications.push(appTables[table]);
     }
 
     return result;
@@ -418,8 +448,8 @@ function generateHTMLReport(profile) {
                     if (index === 0) {
                         html += '<td rowspan="' + aclsByOperation[operation].length + '">' + operationDisplayName + '</td>\n';
                     }
-                    html += '<td>' + acl.table + '</td>\n';
-                    html += '<td>' + acl.type + '</td>\n';
+                    html += '<td>' + (acl.tableDisplay || acl.table) + '</td>\n';
+                    html += '<td>' + (acl.typeDisplay || acl.type) + '</td>\n';
                     html += '<td class="package">' + acl.tablePackage.name + '</td>\n';
                     html += '</tr>\n';
                 });
@@ -458,7 +488,7 @@ function generateHTMLReport(profile) {
             var pkg = sortedPackages[i];
             // Sort tables within each package
             tablesByPackage[pkg].sort(function(a, b) {
-                return a.name.localeCompare(b.name);
+                return (a.displayName || a.name).localeCompare(b.displayName || b.name);
             });
             
             tablesByPackage[pkg].forEach(function(app, index) {
@@ -466,7 +496,7 @@ function generateHTMLReport(profile) {
                 if (index === 0) {
                     html += '<td rowspan="' + tablesByPackage[pkg].length + '" class="package">' + pkg + '</td>\n';
                 }
-                html += '<td>' + app.name + '</td>\n';
+                html += '<td>' + (app.displayName || app.name) + '</td>\n';
                 html += '<td>' + app.roles.join(', ') + '</td>\n';
                 html += '</tr>\n';
             });
@@ -532,7 +562,7 @@ function generateCSVReport(profile) {
     });
     
     csv += '\nACL Details\n';
-    csv += 'Role Type,Role Name,Role Package,Table/Field,Operation,Operation Display,ACL Type,Table Package\n';
+    csv += 'Role Type,Role Name,Role Package,Table/Field,Table Display,Operation,Operation Display,ACL Type,Type Display,Table Package\n';
     sortedRoles.forEach(function(role) {
         if (role.acls.length > 0) {
             var roleType = role.isDirect ? 'DIRECT' : 'INHERITED';
@@ -546,7 +576,7 @@ function generateCSVReport(profile) {
             });
             
             sortedAcls.forEach(function(acl) {
-                csv += '"' + roleType + '","' + role.name + '","' + role.packageInfo.name + '","' + acl.table + '","' + acl.operation + '","' + (acl.operationDisplay || acl.operation) + '","' + acl.type + '","' + acl.tablePackage.name + '"\n';
+                csv += '"' + roleType + '","' + role.name + '","' + role.packageInfo.name + '","' + acl.table + '","' + (acl.tableDisplay || acl.table) + '","' + acl.operation + '","' + (acl.operationDisplay || acl.operation) + '","' + acl.type + '","' + (acl.typeDisplay || acl.type) + '","' + acl.tablePackage.name + '"\n';
             });
         }
     });
@@ -625,7 +655,9 @@ function generateConsoleReport(profile) {
                 gs.print('    ' + operationDisplayName + ' (' + aclsByOperation[operation].length + '):');
                 aclsByOperation[operation].forEach(function(acl) {
                     var packageInfo = acl.tablePackage.name !== 'Global' ? ' [' + acl.tablePackage.name + ']' : '';
-                    gs.print('      • ' + acl.table + packageInfo + ' (' + acl.type + ')');
+                    var tableDisplay = acl.tableDisplay || acl.table;
+                    var typeDisplay = acl.typeDisplay || acl.type;
+                    gs.print('      • ' + tableDisplay + packageInfo + ' (' + typeDisplay + ')');
                 });
             }
             gs.print('');
@@ -663,12 +695,12 @@ function generateConsoleReport(profile) {
             var pkg = sortedPackages[i];
             // Sort tables within each package
             tablesByPackage[pkg].sort(function(a, b) {
-                return a.name.localeCompare(b.name);
+                return (a.displayName || a.name).localeCompare(b.displayName || b.name);
             });
             
             gs.print('  Package: ' + pkg + ' (' + tablesByPackage[pkg].length + ' tables)');
             tablesByPackage[pkg].forEach(function(app) {
-                gs.print('    • ' + app.name + ' (via roles: ' + app.roles.join(', ') + ')');
+                gs.print('    • ' + (app.displayName || app.name) + ' (via roles: ' + app.roles.join(', ') + ')');
             });
             gs.print('');
         }
